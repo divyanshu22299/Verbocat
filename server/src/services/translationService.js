@@ -1,6 +1,9 @@
 const { supabase } = require("../config/supabase");
 const { runQaChecks } = require("../utils/qa");
-const { translateChunk } = require("./translationProviders");
+const {
+  createProviderState,
+  translateChunk
+} = require("./translationProviders");
 
 const normalizeText = (text) =>
   String(text || "")
@@ -38,8 +41,12 @@ const isSafeTmTranslation = (source, target) => {
   return true;
 };
 
+const isPersistableProvider = (provider) =>
+  provider && provider !== "Fallback" && provider !== "Cached Fallback";
+
 const translateSegments = async (segments, target) => {
   const results = [];
+  const providerState = createProviderState();
 
   const sourceTexts = segments.map((segment) => segment.source);
 
@@ -78,7 +85,8 @@ const translateSegments = async (segments, target) => {
     const chunk = missingSegments.slice(index, index + chunkSize);
     const translatedChunk = await translateChunk(
       chunk.map((segment) => segment.source),
-      target
+      target,
+      providerState
     );
 
     const insertRows = [];
@@ -94,13 +102,15 @@ const translateSegments = async (segments, target) => {
         qaIssues: runQaChecks(segment.source, translated.translated)
       });
 
-      insertRows.push({
-        source_text: segment.source,
-        target_text: translated.translated,
-        source_lang: "en",
-        target_lang: target,
-        provider: translated.provider
-      });
+      if (isPersistableProvider(translated.provider)) {
+        insertRows.push({
+          source_text: segment.source,
+          target_text: translated.translated,
+          source_lang: "en",
+          target_lang: target,
+          provider: translated.provider
+        });
+      }
     }
 
     if (insertRows.length > 0) {

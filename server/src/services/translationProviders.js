@@ -1,6 +1,15 @@
 const axios = require("axios");
 const { protectTags } = require("../utils/tagProtection");
 
+const successCache = new Map();
+const failedCache = new Map();
+
+const SUCCESS_CACHE_LIMIT = 5000;
+const FAILED_CACHE_TTL_MS = 10 * 60 * 1000;
+const FAILED_CACHE_LIMIT = 2000;
+const RATE_LIMIT_COOLDOWN_MS = 90 * 1000;
+const PROVIDER_RETRY_DELAYS_MS = [800, 1800, 3500];
+
 const normalizeTranslatedText = (text) =>
   String(text || "")
     .replace(/&#10;/g, " ")
@@ -10,6 +19,62 @@ const normalizeTranslatedText = (text) =>
 
 const stripVisibleTags = (text) =>
   normalizeTranslatedText(text).replace(/<\/?[^>]+>/g, "").trim();
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const cacheKey = (source, target) =>
+  `${target}::${normalizeTranslatedText(source).toLowerCase()}`;
+
+const setLimitedCache = (cache, key, value, limit) => {
+  if (cache.size >= limit) {
+    const firstKey = cache.keys().next().value;
+    cache.delete(firstKey);
+  }
+
+  cache.set(key, value);
+};
+
+const getFailedCache = (key) => {
+  const cached = failedCache.get(key);
+  if (!cached) {
+    return null;
+  }
+
+  if (Date.now() - cached.createdAt > FAILED_CACHE_TTL_MS) {
+    failedCache.delete(key);
+    return null;
+  }
+
+  return cached;
+};
+
+const isRateLimitError = (error) => {
+  const status = error?.response?.status;
+  return status === 403 || status === 408 || status === 429 || status === 503;
+};
+
+const isRetryableError = (error) => {
+  if (isRateLimitError(error)) {
+    return true;
+  }
+
+  return [
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "ECONNABORTED",
+    "ENOTFOUND",
+    "EAI_AGAIN"
+  ].includes(error?.code);
+};
+
+const createProviderState = () => ({
+  cooldownUntil: {
+    Google: 0,
+    MyMemory: 0,
+    LibreTranslate: 0,
+    Lingva: 0
+  }
+});
 
 const isUsableTranslation = (source, translated) => {
   const cleanSource = normalizeTranslatedText(source).toLowerCase();
@@ -85,6 +150,73 @@ const translateWithLingva = async (protectedText, target) => {
   return response.data.translation;
 };
 
+const providers = [
+  {
+    name: "Google",
+    translate: translateWithGoogle
+  },
+  {
+    name: "MyMemory",
+    translate: translateWithMyMemory
+  },
+  {
+    name: "LibreTranslate",
+    translate: translateWithLibreTranslate
+  },
+  {
+    name: "Lingva",
+    translate: translateWithLingva
+  }
+];
+
+const callProviderWithRetry = async (provider, protectedText, target) => {
+  let lastError = null;
+
+  for (let attempt = 0; attempt < PROVIDER_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await provider.translate(protectedText, target);
+    } catch (error) {
+      lastError = error;
+
+      if (!isRetryableError(error) || attempt === PROVIDER_RETRY_DELAYS_MS.length - 1) {
+        throw error;
+      }
+
+      await sleep(PROVIDER_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+
+  throw lastError;
+};
+
+const translateWithProviders = async (source, protectedText, target, providerState) => {
+  const now = Date.now();
+
+  for (const provider of providers) {
+    if ((providerState.cooldownUntil[provider.name] || 0) > now) {
+      continue;
+    }
+
+    try {
+      const candidate = await callProviderWithRetry(provider, protectedText, target);
+
+      if (isUsableTranslation(source, candidate)) {
+        return {
+          translated: candidate,
+          provider: provider.name
+        };
+      }
+    } catch (error) {
+      if (isRateLimitError(error)) {
+        providerState.cooldownUntil[provider.name] =
+          Date.now() + RATE_LIMIT_COOLDOWN_MS;
+      }
+    }
+  }
+
+  return null;
+};
+
 const restoreProtectedTags = (translated, tags) => {
   let output = normalizeTranslatedText(translated);
 
@@ -95,58 +227,74 @@ const restoreProtectedTags = (translated, tags) => {
   return output;
 };
 
-const translateChunk = async (texts, target = "hi") => {
+const translateChunk = async (texts, target = "hi", providerState = createProviderState()) => {
   const results = [];
 
   for (const text of texts) {
+    const key = cacheKey(text, target);
+    const cachedSuccess = successCache.get(key);
+
+    if (cachedSuccess) {
+      results.push({
+        source: text,
+        translated: cachedSuccess.translated,
+        provider: `${cachedSuccess.provider} Cache`
+      });
+      continue;
+    }
+
+    const cachedFailure = getFailedCache(key);
+
+    if (cachedFailure) {
+      results.push({
+        source: text,
+        translated: text,
+        provider: "Cached Fallback"
+      });
+      continue;
+    }
+
     const { protectedText, tags } = protectTags(text);
-    let translated = null;
-    let provider = null;
+    const translation = await translateWithProviders(
+      text,
+      protectedText,
+      target,
+      providerState
+    );
 
-    try {
-      const candidate = await translateWithGoogle(protectedText, target);
-      if (isUsableTranslation(text, candidate)) {
-        translated = candidate;
-        provider = "Google";
-      }
-    } catch (error) {}
-
-    try {
-      const candidate = await translateWithMyMemory(protectedText, target);
-      if (!translated && isUsableTranslation(text, candidate)) {
-        translated = candidate;
-        provider = "MyMemory";
-      }
-    } catch (error) {}
-
-    if (!translated) {
-      try {
-        const candidate = await translateWithLibreTranslate(protectedText, target);
-        if (isUsableTranslation(text, candidate)) {
-          translated = candidate;
-          provider = "LibreTranslate";
-        }
-      } catch (error) {}
-    }
-
-    if (!translated) {
-      try {
-        const candidate = await translateWithLingva(protectedText, target);
-        if (isUsableTranslation(text, candidate)) {
-          translated = candidate;
-          provider = "Lingva";
-        }
-      } catch (error) {}
-    }
+    let translated = translation?.translated || null;
+    let provider = translation?.provider || null;
 
     if (!translated || translated.trim() === "") {
       translated = text;
       provider = "Fallback";
+      setLimitedCache(
+        failedCache,
+        key,
+        {
+          createdAt: Date.now()
+        },
+        FAILED_CACHE_LIMIT
+      );
+    }
+
+    const finalTranslation = stripVisibleTags(restoreProtectedTags(translated, tags));
+
+    if (provider !== "Fallback") {
+      setLimitedCache(
+        successCache,
+        key,
+        {
+          translated: finalTranslation,
+          provider
+        },
+        SUCCESS_CACHE_LIMIT
+      );
     }
 
     results.push({
       source: text,
-      translated: stripVisibleTags(restoreProtectedTags(translated, tags)),
+      translated: finalTranslation,
       provider
     });
   }
@@ -155,5 +303,6 @@ const translateChunk = async (texts, target = "hi") => {
 };
 
 module.exports = {
+  createProviderState,
   translateChunk
 };
