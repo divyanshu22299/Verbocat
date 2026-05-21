@@ -1,14 +1,45 @@
 const { supabase } = require("../config/supabase");
-const { getFuzzyMatch, runQaChecks } = require("../utils/qa");
+const { runQaChecks } = require("../utils/qa");
 const { translateChunk } = require("./translationProviders");
+
+const normalizeText = (text) =>
+  String(text || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const hasVisibleMarkup = (text) => /<\/?[a-z][^>]*>/i.test(text || "");
+
+const digitString = (text) => String(text || "").replace(/\D/g, "");
+
+const isSafeTmTranslation = (source, target) => {
+  const normalizedSource = normalizeText(source);
+  const normalizedTarget = normalizeText(target);
+
+  if (!normalizedTarget) {
+    return false;
+  }
+
+  if (hasVisibleMarkup(normalizedTarget) && !hasVisibleMarkup(normalizedSource)) {
+    return false;
+  }
+
+  if (digitString(normalizedSource) !== digitString(normalizedTarget)) {
+    return false;
+  }
+
+  if (
+    normalizedSource.length <= 25 &&
+    normalizedTarget.length > normalizedSource.length * 5
+  ) {
+    return false;
+  }
+
+  return true;
+};
 
 const translateSegments = async (segments, target) => {
   const results = [];
-
-  const { data: allTmEntries } = await supabase
-    .from("translation_memory")
-    .select("*")
-    .eq("target_lang", target);
 
   const sourceTexts = segments.map((segment) => segment.source);
 
@@ -28,24 +59,12 @@ const translateSegments = async (segments, target) => {
   segments.forEach((segment) => {
     const existing = tmMap[segment.source];
 
-    if (existing) {
+    if (existing && isSafeTmTranslation(segment.source, existing.target_text)) {
       results.push({
         id: segment.id,
         translated: existing.target_text,
         provider: "TM Database",
         qaIssues: runQaChecks(segment.source, existing.target_text)
-      });
-      return;
-    }
-
-    const fuzzy = getFuzzyMatch(segment.source, allTmEntries);
-    if (fuzzy) {
-      results.push({
-        id: segment.id,
-        translated: fuzzy.entry.target_text,
-        provider: `Fuzzy ${fuzzy.score}%`,
-        qaIssues: runQaChecks(segment.source, fuzzy.entry.target_text),
-        fuzzyScore: fuzzy.score
       });
       return;
     }

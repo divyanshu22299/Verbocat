@@ -1,6 +1,47 @@
 const axios = require("axios");
 const { protectTags } = require("../utils/tagProtection");
 
+const normalizeTranslatedText = (text) =>
+  String(text || "")
+    .replace(/&#10;/g, " ")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const stripVisibleTags = (text) =>
+  normalizeTranslatedText(text).replace(/<\/?[^>]+>/g, "").trim();
+
+const isUsableTranslation = (source, translated) => {
+  const cleanSource = normalizeTranslatedText(source).toLowerCase();
+  const cleanTranslated = normalizeTranslatedText(translated).toLowerCase();
+
+  return (
+    cleanTranslated &&
+    cleanTranslated !== cleanSource &&
+    !/<\/?[a-z][^>]*>/i.test(cleanTranslated)
+  );
+};
+
+const translateWithGoogle = async (protectedText, target) => {
+  const response = await axios.get(
+    "https://translate.googleapis.com/translate_a/single",
+    {
+      params: {
+        client: "gtx",
+        sl: "en",
+        tl: target,
+        dt: "t",
+        q: protectedText
+      },
+      timeout: 10000
+    }
+  );
+
+  return (response.data?.[0] || [])
+    .map((part) => part?.[0] || "")
+    .join("");
+};
+
 const translateWithMyMemory = async (protectedText, target) => {
   const response = await axios.get("https://api.mymemory.translated.net/get", {
     params: {
@@ -45,7 +86,7 @@ const translateWithLingva = async (protectedText, target) => {
 };
 
 const restoreProtectedTags = (translated, tags) => {
-  let output = translated.replace(/&#10;/g, " ").replace(/\s+/g, " ").trim();
+  let output = normalizeTranslatedText(translated);
 
   tags.forEach((tag, index) => {
     output = output.replace(`__TAG_${index}__`, tag);
@@ -63,16 +104,26 @@ const translateChunk = async (texts, target = "hi") => {
     let provider = null;
 
     try {
-      translated = await translateWithMyMemory(protectedText, target);
-      if (translated && translated.trim() !== "") {
+      const candidate = await translateWithGoogle(protectedText, target);
+      if (isUsableTranslation(text, candidate)) {
+        translated = candidate;
+        provider = "Google";
+      }
+    } catch (error) {}
+
+    try {
+      const candidate = await translateWithMyMemory(protectedText, target);
+      if (!translated && isUsableTranslation(text, candidate)) {
+        translated = candidate;
         provider = "MyMemory";
       }
     } catch (error) {}
 
     if (!translated) {
       try {
-        translated = await translateWithLibreTranslate(protectedText, target);
-        if (translated && translated.trim() !== "") {
+        const candidate = await translateWithLibreTranslate(protectedText, target);
+        if (isUsableTranslation(text, candidate)) {
+          translated = candidate;
           provider = "LibreTranslate";
         }
       } catch (error) {}
@@ -80,8 +131,9 @@ const translateChunk = async (texts, target = "hi") => {
 
     if (!translated) {
       try {
-        translated = await translateWithLingva(protectedText, target);
-        if (translated && translated.trim() !== "") {
+        const candidate = await translateWithLingva(protectedText, target);
+        if (isUsableTranslation(text, candidate)) {
+          translated = candidate;
           provider = "Lingva";
         }
       } catch (error) {}
@@ -94,7 +146,7 @@ const translateChunk = async (texts, target = "hi") => {
 
     results.push({
       source: text,
-      translated: restoreProtectedTags(translated, tags),
+      translated: stripVisibleTags(restoreProtectedTags(translated, tags)),
       provider
     });
   }
