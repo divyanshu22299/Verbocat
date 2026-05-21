@@ -5,32 +5,6 @@ const { v4: uuidv4 } = require("uuid");
 
 const htmlFiles = {};
 
-const BLOCK_SELECTOR = [
-  "address",
-  "article",
-  "aside",
-  "blockquote",
-  "caption",
-  "dd",
-  "div",
-  "dt",
-  "figcaption",
-  "footer",
-  "h1",
-  "h2",
-  "h3",
-  "h4",
-  "h5",
-  "h6",
-  "header",
-  "li",
-  "main",
-  "p",
-  "section",
-  "td",
-  "th"
-].join(",");
-
 const SKIP_SELECTOR = "script,style,noscript,svg,canvas";
 
 const normalizeSegmentText = (text) =>
@@ -39,12 +13,6 @@ const normalizeSegmentText = (text) =>
     .replace(/[ \t\r\f\v]+/g, " ")
     .replace(/\n\s*/g, "\n")
     .trim();
-
-const getElementText = ($, element) => {
-  const clone = $(element).clone();
-  clone.find("br").replaceWith("\n");
-  return normalizeSegmentText(clone.text());
-};
 
 const escapeHtml = (text) =>
   String(text || "")
@@ -67,38 +35,6 @@ const createHtmlSegments = ($) => {
   const segments = [];
   let segmentIndex = 0;
 
-  const addSegment = ($element, source) => {
-    const segmentId = segmentIndex++;
-    $element.empty().append(`__SEG_${segmentId}__`);
-    segments.push({
-      id: segmentId,
-      source,
-      target: ""
-    });
-  };
-
-  $(BLOCK_SELECTOR).each((_, element) => {
-    const $element = $(element);
-
-    if (
-      $element.closest(SKIP_SELECTOR).length > 0 ||
-      $element.find(BLOCK_SELECTOR).length > 0
-    ) {
-      return;
-    }
-
-    const source = getElementText($, element);
-    if (!source) {
-      return;
-    }
-
-    addSegment($element, source);
-  });
-
-  if (segments.length > 0) {
-    return segments;
-  }
-
   $("body")
     .find("*")
     .contents()
@@ -112,17 +48,22 @@ const createHtmlSegments = ($) => {
         return;
       }
 
-      const source = normalizeSegmentText($(element).text());
+      const rawText = $(element).text();
+      const source = normalizeSegmentText(rawText);
       if (!source) {
         return;
       }
 
+      const leading = rawText.match(/^\s*/)?.[0] || "";
+      const trailing = rawText.match(/\s*$/)?.[0] || "";
       const segmentId = segmentIndex++;
       $(element).replaceWith(`__SEG_${segmentId}__`);
       segments.push({
         id: segmentId,
         source,
-        target: ""
+        target: "",
+        leading,
+        trailing
       });
     });
 
@@ -192,7 +133,12 @@ const exportHtml = (fileId, segments) => {
   }
 
   segments.forEach((segment) => {
-    html = html.replace(`__SEG_${segment.id}__`, toHtmlText(segment.target));
+    const replacement =
+      escapeHtml(segment.leading || "") +
+      toHtmlText(segment.target) +
+      escapeHtml(segment.trailing || "");
+
+    html = html.replace(`__SEG_${segment.id}__`, replacement);
   });
 
   return html;
