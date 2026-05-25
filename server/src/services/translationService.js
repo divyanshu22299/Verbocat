@@ -51,15 +51,14 @@ const isPersistableProvider = (provider) =>
   provider && provider !== "Fallback" && provider !== "Cached Fallback";
 
 const translateSegments = async (segments, target) => {
-  const results = [];
   const providerState = createProviderState();
 
-  const sourceTexts = segments.map((segment) => segment.source);
+  const uniqueSources = [...new Set(segments.map((s) => s.source))];
 
   const { data: existingTranslations } = await supabase
     .from("translation_memory")
     .select("*")
-    .in("source_text", sourceTexts)
+    .in("source_text", uniqueSources)
     .eq("target_lang", target);
 
   const tmMap = {};
@@ -67,58 +66,43 @@ const translateSegments = async (segments, target) => {
     tmMap[item.source_text] = item;
   });
 
-  const missingSegments = [];
+  const uniqueMissingSources = [];
 
-  segments.forEach((segment) => {
-    const existing = tmMap[segment.source];
-
-    if (existing && isSafeTmTranslation(segment.source, existing.target_text)) {
-      results.push({
-        id: segment.id,
-        translated: existing.target_text,
-        provider: "TM Database",
-        qaIssues: runQaChecks(segment.source, existing.target_text)
-      });
-      return;
+  uniqueSources.forEach((source) => {
+    const existing = tmMap[source];
+    if (!existing || !isSafeTmTranslation(source, existing.target_text)) {
+      uniqueMissingSources.push(source);
     }
-
-    missingSegments.push(segment);
   });
 
   const chunkSize = 20;
 
-  for (let index = 0; index < missingSegments.length; index += chunkSize) {
-    const chunk = missingSegments.slice(index, index + chunkSize);
-    const translatedChunk = await translateChunk(
-      chunk.map((segment) => segment.source),
-      target,
-      providerState
-    );
+  for (let index = 0; index < uniqueMissingSources.length; index += chunkSize) {
+    const chunkSources = uniqueMissingSources.slice(index, index + chunkSize);
+    const translatedChunk = await translateChunk(chunkSources, target, providerState);
 
     const insertRows = [];
 
-    for (let offset = 0; offset < chunk.length; offset += 1) {
-      const segment = chunk[offset];
+    chunkSources.forEach((source, offset) => {
       const translated = translatedChunk[offset];
       const translatedText = ensureEnglishNumerals(translated.translated);
 
-      results.push({
-        id: segment.id,
-        translated: translatedText,
-        provider: translated.provider,
-        qaIssues: runQaChecks(segment.source, translatedText)
-      });
+      tmMap[source] = {
+        source_text: source,
+        target_text: translatedText,
+        provider: translated.provider
+      };
 
       if (isPersistableProvider(translated.provider)) {
         insertRows.push({
-          source_text: segment.source,
+          source_text: source,
           target_text: translatedText,
           source_lang: "en",
           target_lang: target,
           provider: translated.provider
         });
       }
-    }
+    });
 
     if (insertRows.length > 0) {
       const { error: insertError } = await supabase
@@ -132,9 +116,20 @@ const translateSegments = async (segments, target) => {
     }
   }
 
-  return {
-    results
-  };
+  const results = segments.map((segment) => {
+    const tmEntry = tmMap[segment.source];
+    const targetText = tmEntry ? tmEntry.target_text : "";
+    const provider = tmEntry && tmEntry.provider ? tmEntry.provider : "TM Database";
+
+    return {
+      id: segment.id,
+      translated: targetText,
+      provider: provider,
+      qaIssues: runQaChecks(segment.source, targetText)
+    };
+  });
+
+  return { results };
 };
 
 module.exports = {
