@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const zlib = require("zlib");
 const cheerio = require("cheerio");
 const mammoth = require("mammoth");
 const { v4: uuidv4 } = require("uuid");
@@ -89,10 +90,13 @@ const processUploadedFile = async (file) => {
 
     const segments = createHtmlSegments($);
 
+    const htmlString = $.html();
+    const compressedHtml = zlib.gzipSync(Buffer.from(htmlString, "utf-8")).toString("base64");
+
     const fileId = uuidv4();
     const { error: insertError } = await supabase
       .from("html_files")
-      .insert([{ id: fileId, content: $.html() }]);
+      .insert([{ id: fileId, content: compressedHtml }]);
 
     if (insertError) {
       console.error("Supabase insert error:", insertError);
@@ -156,7 +160,13 @@ const exportHtml = async (fileId, segments) => {
     throw error;
   }
 
-  let html = data.content;
+  let html = "";
+  try {
+    const buffer = Buffer.from(data.content, "base64");
+    html = zlib.gunzipSync(buffer).toString("utf-8");
+  } catch (err) {
+    html = data.content;
+  }
 
   segments.forEach((segment) => {
     const replacement =
