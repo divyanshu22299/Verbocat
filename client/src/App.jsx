@@ -141,6 +141,21 @@ export default function App() {
     }
   };
 
+  const handleRelinkHtml = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    try {
+      showToast(`Relinking template...`);
+      const data = await uploadFile(file);
+      setFileId(data.fileId || null);
+      showToast(`HTML Template relinked successfully! You can now Export.`);
+    } catch (error) {
+      console.log(error);
+      showToast("Relink failed.", "error");
+    }
+  };
+
   const handleUpload = (event) => {
     handleFileProcessing(event.target.files[0]);
   };
@@ -431,6 +446,7 @@ export default function App() {
               onLoadProject={loadProject}
               onOpenGlossary={() => setShowGlossary(true)}
               onSaveProject={saveProject}
+              onRelinkHtml={handleRelinkHtml}
               onTranslate={handleTranslateSegments}
               onToggleQa={() => setShowQaPanel((value) => !value)}
               isTranslating={isTranslating}

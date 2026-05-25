@@ -108,6 +108,23 @@ export const WorkspaceToolbar = ({
             <Icons.Save />
             Save
           </ActionButton>
+          <label
+            className={
+              segmentsCount === 0
+                ? "inline-flex cursor-not-allowed items-center justify-center gap-2 rounded-xl px-3.5 py-2.5 text-sm font-semibold transition bg-slate-400/30 text-slate-300"
+                : "inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl px-3.5 py-2.5 text-sm font-semibold transition bg-teal-700 text-white hover:bg-teal-600"
+            }
+          >
+            <Icons.Upload />
+            Relink HTML
+            <input
+              type="file"
+              accept=".html"
+              onChange={onRelinkHtml}
+              className="hidden"
+              disabled={segmentsCount === 0}
+            />
+          </label>
           <ActionButton
             onClick={onExport}
             disabled={segmentsCount === 0}
