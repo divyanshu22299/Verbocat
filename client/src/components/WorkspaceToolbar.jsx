@@ -16,6 +16,7 @@ export const WorkspaceToolbar = ({
   onLoadProject,
   onOpenGlossary,
   onSaveProject,
+  onRelinkHtml,
   onTranslate,
   onToggleQa,
   isTranslating,
