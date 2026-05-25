@@ -168,13 +168,21 @@ const exportHtml = async (fileId, segments) => {
     html = data.content;
   }
 
+  const segmentMap = new Map();
   segments.forEach((segment) => {
     const replacement =
       escapeHtml(segment.leading || "") +
       toHtmlText(segment.target) +
       escapeHtml(segment.trailing || "");
+    segmentMap.set(segment.id, replacement);
+  });
 
-    html = html.replace(`__SEG_${segment.id}__`, replacement);
+  html = html.replace(/__SEG_(\d+)__/g, (match, idStr) => {
+    const id = parseInt(idStr, 10);
+    if (segmentMap.has(id)) {
+      return segmentMap.get(id);
+    }
+    return match;
   });
 
   return html;
